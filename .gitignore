@@ -1,51 +1,62 @@
-# Antigravity Agent internal cache & session state
-.agent
+# Agent / AI Tooling
 .agent/
+.agents/
+.gemini/
+.claude/
+.cursor/
 
-# Rust / Cargo build artifacts
-/target
+# Rust / Cargo (Cargo.lock kept tracked for reproducible builds)
 target/
 **/*.rs.bk
 *.pdb
 
-# Python & virtual environment artifacts (Backend)
+# Local AI Runtime, Model Weights & Native Binaries
+runtime/
+models/
+*.gguf
+*.onnx
+*.bin
+*.safetensors
+*.pt
+*.pth
+*.exe
+*.dll
+*.lib
+*.exp
+*.so
+*.dylib
+
+# Optional Python Audio Backend & Virtual Environments
+python_env/
+.venv/
+venv/
+env/
+libraries/
 __pycache__/
 *.py[cod]
 *$py.class
-*.so
-.Python
-env/
-venv/
-.venv/
-python_env/
 *.egg-info/
-.installed.cfg
-*.egg
+.pytest_cache/
 
-# IDE & Editor configurations
+# Local Secrets & Config Overrides
+.env
+.env.*
+config.local.toml
+
+# IDEs & Editors
 .vscode/
 .idea/
-*.sublime-project
-*.sublime-workspace
 *.suo
 *.user
-*.userosscache
 *.sln.docstates
 
-# Windows System files
+# OS Artifacts
 Thumbs.db
-Thumbs.db:encryptable
-ehthumbs.db
-ehthumbs_vista.db
 Desktop.ini
 $RECYCLE.BIN/
-
-# macOS System files
 .DS_Store
-.AppleDouble
-.LSOverride
 
-# Logs, scratch scripts & temporary dumps
+# Logs & Temporary Files
 *.log
 *.tmp
 *.bak

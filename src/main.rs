@@ -2,6 +2,7 @@ mod app;
 mod backend;
 mod chat;
 mod companion;
+mod config;
 mod screen;
 mod theme;
 mod toolbar;

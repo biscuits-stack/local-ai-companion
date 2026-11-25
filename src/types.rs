@@ -101,3 +101,22 @@ pub struct Toast {
     pub message: String,
     pub expires_at: f64,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LlmStatus {
+    Starting,
+    LoadingModel,
+    Ready,
+    Error(String),
+}
+
+impl LlmStatus {
+    pub fn label(&self) -> String {
+        match self {
+            LlmStatus::Starting => "Bonsai 27B: Starting...".to_string(),
+            LlmStatus::LoadingModel => "Bonsai 27B: Loading model into VRAM...".to_string(),
+            LlmStatus::Ready => "Bonsai 27B: Ready".to_string(),
+            LlmStatus::Error(err) => format!("Bonsai 27B Error: {err}"),
+        }
+    }
+}

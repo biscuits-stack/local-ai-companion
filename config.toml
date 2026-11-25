@@ -1,0 +1,14 @@
+[runtime]
+root_dir = "runtime"
+llama_server_bin = "runtime/bin/llama-server.exe"
+model_path = "runtime/models/Ternary-Bonsai-2.5-27B-Q2_0.gguf"
+mmproj_path = ""
+
+[llm]
+host = "127.0.0.1"
+port = 8080
+n_gpu_layers = 99
+ctx_size = 8192
+batch_size = 512
+ubatch_size = 64
+parallel = 1

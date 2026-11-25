@@ -4,9 +4,8 @@ use eframe::egui::{self, Vec2};
 use crate::backend::{BackendEvent, BackendHandle};
 use crate::chat::ChatWindow;
 use crate::companion::Companion;
-use crate::screen::capture_screen_base64;
 use crate::toolbar::Toolbar;
-use crate::types::{ChatMessage, CompanionEmotion, MessageRole, Toast};
+use crate::types::{ChatMessage, CompanionEmotion, LlmStatus, MessageRole, Toast};
 use crate::window_helper::WindowHitTestManager;
 
 pub struct DesktopCompanionApp {
@@ -14,6 +13,7 @@ pub struct DesktopCompanionApp {
     pub toolbar: Toolbar,
     pub chat_window: ChatWindow,
     pub backend: BackendHandle,
+    pub llm_status: LlmStatus,
     pub messages: Vec<ChatMessage>,
     pub is_chat_open: bool,
     pub is_mic_muted: bool,
@@ -46,6 +46,7 @@ impl DesktopCompanionApp {
             toolbar,
             chat_window,
             backend,
+            llm_status: LlmStatus::Starting,
             messages: initial_messages,
             is_chat_open: false,
             is_mic_muted: true,
@@ -105,6 +106,21 @@ impl eframe::App for DesktopCompanionApp {
                     self.is_mic_muted = !mic_active;
                     self.companion.is_listening = mic_active;
                     self.companion.is_speaking = bot_is_talking && !self.is_voice_muted;
+                }
+                BackendEvent::LlmStatusChanged(status) => {
+                    self.llm_status = status.clone();
+                    match status {
+                        LlmStatus::LoadingModel => {
+                            self.show_toast("Bonsai 27B: Loading model into VRAM...".to_string(), 4.0);
+                        }
+                        LlmStatus::Ready => {
+                            self.show_toast("Bonsai 27B: Ready".to_string(), 3.0);
+                        }
+                        LlmStatus::Error(err) => {
+                            self.show_toast(format!("Bonsai Error: {err}"), 5.0);
+                        }
+                        LlmStatus::Starting => {}
+                    }
                 }
                 BackendEvent::AssistantMessage { text, emotion } => {
                     self.companion.is_thinking = false;
@@ -178,7 +194,6 @@ impl eframe::App for DesktopCompanionApp {
                 }
                 if on_capture_screen {
                     self.show_toast("Capturing screen for AI companion...".to_string(), 3.0);
-                    let _ = capture_screen_base64();
                     self.handle_send_message("What is on my screen right now?".to_string(), true);
                 }
                 if on_close {
@@ -206,6 +221,7 @@ impl eframe::App for DesktopCompanionApp {
 
             if actions.toggle_voice {
                 self.is_voice_muted = !self.is_voice_muted;
+                self.backend.set_voice_muted(self.is_voice_muted);
                 self.show_toast(
                     if self.is_voice_muted { "AI Voice: MUTED" } else { "AI Voice: ACTIVE" }.to_string(),
                     2.5,
@@ -226,7 +242,6 @@ impl eframe::App for DesktopCompanionApp {
 
             if actions.capture_screen {
                 self.show_toast("Capturing screen for AI companion...".to_string(), 3.0);
-                let _ = capture_screen_base64();
                 self.handle_send_message("What is on my screen right now?".to_string(), true);
             }
 

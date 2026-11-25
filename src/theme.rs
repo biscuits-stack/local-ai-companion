@@ -154,12 +154,33 @@ pub fn tokens() -> &'static ThemeTokens {
     THEME_TOKENS.get_or_init(ThemeTokens::smoked_mica)
 }
 
-/// Applies native Windows font definitions with safe fallback and explicit `TextStyle` scale.
+fn resolve_font_bytes(candidates: &[&str]) -> Option<Vec<u8>> {
+    let mut search_dirs = vec![
+        crate::config::app_root_dir().join("assets").join("fonts"),
+        crate::config::app_root_dir().join("fonts"),
+    ];
+
+    if let Ok(win_dir) = std::env::var("WINDIR").or_else(|_| std::env::var("SYSTEMROOT")) {
+        search_dirs.push(std::path::PathBuf::from(win_dir).join("Fonts"));
+    }
+
+    for dir in &search_dirs {
+        for filename in candidates {
+            let p = dir.join(filename);
+            if let Ok(bytes) = std::fs::read(&p) {
+                return Some(bytes);
+            }
+        }
+    }
+    None
+}
+
+/// Applies local bundled or system fonts with safe fallback to embedded egui glyphs.
 pub fn configure_fonts(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
 
-    // 1. Try loading Segoe UI from native Windows font directory
-    let segoe_loaded = if let Ok(data) = std::fs::read("C:\\Windows\\Fonts\\segoeui.ttf") {
+    // 1. Try loading Segoe UI from bundled assets/fonts or dynamic Windows Fonts dir
+    let segoe_loaded = if let Some(data) = resolve_font_bytes(&["segoeui.ttf"]) {
         fonts.font_data.insert(
             "segoe_ui".to_owned(),
             Arc::new(FontData::from_owned(data)),
@@ -169,25 +190,13 @@ pub fn configure_fonts(ctx: &egui::Context) {
         false
     };
 
-    // 2. Try loading native monospace font (Cascadia Mono, then Consolas)
-    let mono_path = if std::path::Path::new("C:\\Windows\\Fonts\\CascadiaMono.ttf").exists() {
-        Some("C:\\Windows\\Fonts\\CascadiaMono.ttf")
-    } else if std::path::Path::new("C:\\Windows\\Fonts\\consola.ttf").exists() {
-        Some("C:\\Windows\\Fonts\\consola.ttf")
-    } else {
-        None
-    };
-
-    let mono_loaded = if let Some(path) = mono_path {
-        if let Ok(data) = std::fs::read(path) {
-            fonts.font_data.insert(
-                "windows_mono".to_owned(),
-                Arc::new(FontData::from_owned(data)),
-            );
-            true
-        } else {
-            false
-        }
+    // 2. Try loading monospace font (Cascadia Mono, then Consolas)
+    let mono_loaded = if let Some(data) = resolve_font_bytes(&["CascadiaMono.ttf", "consola.ttf"]) {
+        fonts.font_data.insert(
+            "windows_mono".to_owned(),
+            Arc::new(FontData::from_owned(data)),
+        );
+        true
     } else {
         false
     };

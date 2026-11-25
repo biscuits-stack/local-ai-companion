@@ -7,22 +7,19 @@ echo       Launching AI Desktop Companion (Pure Rust)
 echo       Transparent Overlay ^| Kokoro TTS ^| Whisper STT
 echo ========================================================
 
-REM Add cargo and gcc to PATH if available
-set "PATH=%USERPROFILE%\.cargo\bin;C:\msys64\ucrt64\bin;%PATH%"
-
-REM Dynamically locate backend directory
+REM Dynamically locate optional audio backend strictly inside this folder
 set "BACKEND_DIR="
-if exist "%~dp0..\Local-AI\Backend\convene_server.py" set "BACKEND_DIR=%~dp0..\Local-AI\Backend"
-if exist "%~dp0Backend\convene_server.py" set "BACKEND_DIR=%~dp0Backend"
 if exist "%~dp0backend\convene_server.py" set "BACKEND_DIR=%~dp0backend"
-if exist "%~dp0..\Backend\convene_server.py" set "BACKEND_DIR=%~dp0..\Backend"
+if exist "%~dp0Backend\convene_server.py" set "BACKEND_DIR=%~dp0Backend"
+if exist "%~dp0runtime\backend\convene_server.py" set "BACKEND_DIR=%~dp0runtime\backend"
+if exist "%~dp0runtime\Backend\convene_server.py" set "BACKEND_DIR=%~dp0runtime\Backend"
 
 REM Check if Kokoro TTS & Whisper backend is already running on port 8000
 netstat -aon 2>nul | findstr ":8000" >nul
 if not errorlevel 1 goto :backend_already_running
 
 if not defined BACKEND_DIR (
-    echo [Info] Backend directory not found; launching in standalone client mode.
+    echo [Info] Local audio backend not bundled; launching in standalone companion mode.
     goto :launch_companion
 )
 
@@ -43,7 +40,7 @@ ping 127.0.0.1 -n 3 >nul
 goto :launch_companion
 
 :no_python
-echo [Warning] Python executable not found in %BACKEND_DIR%; companion will run in client mode.
+echo [Warning] Python executable not found in %BACKEND_DIR%; companion will run without Python audio service.
 goto :launch_companion
 
 :backend_already_running
@@ -56,17 +53,27 @@ echo [System] Console window will stay open to display live logs.
 echo ========================================================
 echo.
 
-if exist "target\release\local_ai_companion.exe" goto :run_release
-if exist "target\debug\local_ai_companion.exe" goto :run_debug
-cargo run --release
+if exist "%~dp0local_ai_companion.exe" goto :run_local_exe
+if exist "%~dp0target\release\local_ai_companion.exe" goto :run_release
+if exist "%~dp0target\debug\local_ai_companion.exe" goto :run_debug
+where cargo >nul 2>nul
+if not errorlevel 1 (
+    cargo run --release
+    goto :after_run
+)
+echo [Error] Could not find local_ai_companion.exe or cargo on PATH.
+exit /b 1
+
+:run_local_exe
+"%~dp0local_ai_companion.exe"
 goto :after_run
 
 :run_release
-"target\release\local_ai_companion.exe"
+"%~dp0target\release\local_ai_companion.exe"
 goto :after_run
 
 :run_debug
-"target\debug\local_ai_companion.exe"
+"%~dp0target\debug\local_ai_companion.exe"
 goto :after_run
 
 :after_run
