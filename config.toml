@@ -1,6 +1,6 @@
-﻿[runtime]
+[runtime]
 root_dir = "runtime"
-llama_server_bin = "runtime/bin/llama-server.exe"
+llama_server_bin = "runtime/bin/llama-server"
 model_path = "runtime/models/Ternary-Bonsai-2.5-27B-Q2_0.gguf"
 mmproj_path = "runtime/models/Ternary-Bonsai-2.5-27B-mmproj-BF16.gguf"
 
@@ -10,7 +10,11 @@ auto_vram_sizing = true
 host = "127.0.0.1"
 port = 8080
 n_gpu_layers = 99
-ctx_size = 8192
+ctx_size = 16384
+kv_cache_type = "q8_0"
 batch_size = 512
-ubatch_size = 64
+ubatch_size = 256
 parallel = 1
+max_tokens = 3072
+reasoning_budget = 512
+request_timeout_secs = 600

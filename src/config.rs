@@ -15,9 +15,13 @@ pub struct RuntimeConfig {
     pub port: u16,
     pub n_gpu_layers: u32,
     pub ctx_size: u32,
+    pub kv_cache_type: String,
     pub batch_size: u32,
     pub ubatch_size: u32,
     pub parallel: u32,
+    pub max_tokens: u32,
+    pub reasoning_budget: i32,
+    pub request_timeout_secs: u64,
 }
 
 impl Default for RuntimeConfig {
@@ -41,10 +45,14 @@ impl Default for RuntimeConfig {
             host: "127.0.0.1".to_string(),
             port: 8080,
             n_gpu_layers: 99,
-            ctx_size: 8192,
+            ctx_size: 16384,
+            kv_cache_type: "q8_0".to_string(),
             batch_size: 512,
-            ubatch_size: 64,
+            ubatch_size: 256,
             parallel: 1,
+            max_tokens: 2048,
+            reasoning_budget: 1024,
+            request_timeout_secs: 300,
         }
     }
 }
@@ -304,6 +312,9 @@ impl RuntimeConfig {
                         self.ctx_size = c;
                     }
                 }
+                ("llm", "kv_cache_type") if !val.is_empty() => {
+                    self.kv_cache_type = val;
+                }
                 ("llm", "batch_size") => {
                     if let Ok(b) = val.parse::<u32>() {
                         self.batch_size = b;
@@ -317,6 +328,21 @@ impl RuntimeConfig {
                 ("llm", "parallel") => {
                     if let Ok(p) = val.parse::<u32>() {
                         self.parallel = p;
+                    }
+                }
+                ("llm", "max_tokens") => {
+                    if let Ok(m) = val.parse::<u32>() {
+                        self.max_tokens = m;
+                    }
+                }
+                ("llm", "reasoning_budget") => {
+                    if let Ok(r) = val.parse::<i32>() {
+                        self.reasoning_budget = r;
+                    }
+                }
+                ("llm", "request_timeout_secs") => {
+                    if let Ok(t) = val.parse::<u64>() {
+                        self.request_timeout_secs = t;
                     }
                 }
                 _ => {}

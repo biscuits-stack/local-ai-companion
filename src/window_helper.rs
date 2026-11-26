@@ -1,9 +1,7 @@
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::{
     Foundation::HWND,
-    Graphics::Gdi::{
-        CombineRgn, CreateRectRgn, DeleteObject, SetWindowRgn, RGN_OR,
-    },
+    Graphics::Gdi::{CombineRgn, CreateRectRgn, DeleteObject, SetWindowRgn, RGN_OR},
     UI::WindowsAndMessaging::{FindWindowW, SetWindowPos, HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE},
 };
 
@@ -133,13 +131,13 @@ impl WindowHitTestManager {
         // Locate matching companion NSWindow by title, falling back to first window
         let mut target: Option<objc2::rc::Retained<NSWindow>> = None;
         for i in 0..count {
-            let win = windows.objectAtIndex(i);
+            let win = unsafe { windows.objectAtIndex(i) };
             if win.title().to_string() == window_title {
                 target = Some(win);
                 break;
             }
         }
-        let window = target.unwrap_or_else(|| windows.objectAtIndex(0));
+        let window = target.unwrap_or_else(|| unsafe { windows.objectAtIndex(0) });
 
         if !self.configured_window {
             window.setHasShadow(false);
@@ -171,5 +169,6 @@ impl WindowHitTestManager {
         _window_title: &str,
         _rects: &[eframe::egui::Rect],
         _scale_factor: f32,
-    ) {}
+    ) {
+    }
 }

@@ -1,6 +1,8 @@
-use eframe::egui::{self, Pos2, Rect, Vec2};
+use crate::markdown;
 use crate::theme;
 use crate::types::{ChatMessage, MessageRole};
+use eframe::egui::{self, Pos2, Rect, Vec2};
+use std::time::{Duration, Instant};
 
 pub struct ChatWindow {
     pub pos: Pos2,
@@ -13,6 +15,7 @@ pub struct ChatWindow {
     pub enlarged_size: Vec2,
     pub input_text: String,
     pub should_scroll_to_bottom: bool,
+    pub copied_feedback: Option<(String, Instant)>,
 }
 
 impl ChatWindow {
@@ -36,6 +39,7 @@ impl ChatWindow {
             ),
             input_text: String::new(),
             should_scroll_to_bottom: true,
+            copied_feedback: None,
         }
     }
 
@@ -48,6 +52,7 @@ impl ChatWindow {
         ui: &mut egui::Ui,
         messages: &[ChatMessage],
         is_thinking: bool,
+        thinking_tokens: usize,
         is_mic_muted: bool,
         on_send: &mut Option<String>,
         on_toggle_mic: &mut bool,
@@ -77,7 +82,8 @@ impl ChatWindow {
 
                         // Drag region title
                         let title_w = (self.size.x - 120.0).max(100.0);
-                        let title_rect = Rect::from_min_size(ui.cursor().min, Vec2::new(title_w, 24.0));
+                        let title_rect =
+                            Rect::from_min_size(ui.cursor().min, Vec2::new(title_w, 24.0));
                         let drag_resp = ui.allocate_rect(title_rect, egui::Sense::drag());
 
                         if drag_resp.hovered() || self.is_dragging {
@@ -111,9 +117,7 @@ impl ChatWindow {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             // Close button
                             let close_btn = egui::Button::new(
-                                egui::RichText::new("✕")
-                                    .color(t.text_secondary)
-                                    .size(11.0),
+                                egui::RichText::new("✕").color(t.text_secondary).size(11.0),
                             )
                             .rounding(t.rounding_control);
 
@@ -123,7 +127,11 @@ impl ChatWindow {
 
                             // Enlarge / Compact toggle button
                             let size_label = if self.is_enlarged { "–" } else { "+" };
-                            let size_hover = if self.is_enlarged { "Compact chatbox" } else { "Enlarge chatbox" };
+                            let size_hover = if self.is_enlarged {
+                                "Compact chatbox"
+                            } else {
+                                "Enlarge chatbox"
+                            };
 
                             let size_btn = egui::Button::new(
                                 egui::RichText::new(size_label)
@@ -140,8 +148,14 @@ impl ChatWindow {
                                 } else {
                                     self.normal_size
                                 };
-                                self.pos.x = self.pos.x.clamp(10.0, (screen.width() - self.size.x - 10.0).max(10.0));
-                                self.pos.y = self.pos.y.clamp(10.0, (screen.height() - self.size.y - 10.0).max(10.0));
+                                self.pos.x = self
+                                    .pos
+                                    .x
+                                    .clamp(10.0, (screen.width() - self.size.x - 10.0).max(10.0));
+                                self.pos.y = self
+                                    .pos
+                                    .y
+                                    .clamp(10.0, (screen.height() - self.size.y - 10.0).max(10.0));
                             }
                         });
                     });
@@ -166,64 +180,136 @@ impl ChatWindow {
                             for msg in messages {
                                 match msg.role {
                                     MessageRole::User => {
-                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                                            ui.add_space(4.0);
-                                            egui::Frame::none()
-                                                .fill(t.bg_user_bubble)
-                                                .rounding(t.rounding_card)
-                                                .inner_margin(egui::Margin::symmetric(10.0, 7.0))
-                                                .stroke(t.hairline_subtle)
-                                                .show(ui, |ui| {
-                                                    ui.set_max_width(max_bubble_w);
-                                                    ui.add(
-                                                        egui::Label::new(
-                                                            egui::RichText::new(&msg.text)
-                                                                .color(t.text_primary)
-                                                                .size(13.0),
-                                                        )
-                                                        .wrap_mode(egui::TextWrapMode::Wrap),
-                                                    );
-                                                });
-                                        });
-                                    }
-                                    MessageRole::Assistant => {
-                                        ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
-                                            ui.add_space(4.0);
-                                            egui::Frame::none()
-                                                .fill(t.bg_surface_elevated)
-                                                .rounding(t.rounding_card)
-                                                .inner_margin(egui::Margin::symmetric(10.0, 8.0))
-                                                .stroke(t.hairline_subtle)
-                                                .show(ui, |ui| {
-                                                    ui.set_max_width(max_bubble_w);
-                                                    ui.vertical(|ui| {
-                                                        ui.horizontal(|ui| {
-                                                            ui.label(
-                                                                egui::RichText::new("AI")
-                                                                    .color(t.text_primary)
-                                                                    .size(11.0)
-                                                                    .strong(),
-                                                            );
-                                                            if let Some(emo) = msg.emotion {
-                                                                ui.label(
-                                                                    egui::RichText::new(format!("· {}", emo.display_name()))
-                                                                        .color(t.text_secondary)
-                                                                        .size(11.0),
-                                                                );
-                                                            }
-                                                        });
-                                                        ui.add_space(2.0);
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::TOP),
+                                            |ui| {
+                                                ui.add_space(4.0);
+                                                egui::Frame::none()
+                                                    .fill(t.bg_user_bubble)
+                                                    .rounding(t.rounding_card)
+                                                    .inner_margin(egui::Margin::symmetric(
+                                                        10.0, 7.0,
+                                                    ))
+                                                    .stroke(t.hairline_subtle)
+                                                    .show(ui, |ui| {
+                                                        ui.set_max_width(max_bubble_w);
                                                         ui.add(
                                                             egui::Label::new(
                                                                 egui::RichText::new(&msg.text)
                                                                     .color(t.text_primary)
                                                                     .size(13.0),
                                                             )
+                                                            .selectable(true)
                                                             .wrap_mode(egui::TextWrapMode::Wrap),
                                                         );
                                                     });
-                                                });
-                                        });
+                                            },
+                                        );
+                                    }
+                                    MessageRole::Assistant => {
+                                        ui.with_layout(
+                                            egui::Layout::left_to_right(egui::Align::TOP),
+                                            |ui| {
+                                                ui.add_space(4.0);
+                                                egui::Frame::none()
+                                                    .fill(t.bg_surface_elevated)
+                                                    .rounding(t.rounding_card)
+                                                    .inner_margin(egui::Margin::symmetric(
+                                                        10.0, 8.0,
+                                                    ))
+                                                    .stroke(t.hairline_subtle)
+                                                    .show(ui, |ui| {
+                                                        ui.set_max_width(max_bubble_w);
+                                                        ui.vertical(|ui| {
+                                                            ui.horizontal(|ui| {
+                                                                ui.label(
+                                                                    egui::RichText::new("AI")
+                                                                        .color(t.text_primary)
+                                                                        .size(11.0)
+                                                                        .strong(),
+                                                                );
+                                                                if let Some(emo) = msg.emotion {
+                                                                    ui.label(
+                                                                        egui::RichText::new(
+                                                                            format!(
+                                                                                "· {}",
+                                                                                emo.display_name()
+                                                                            ),
+                                                                        )
+                                                                        .color(t.text_secondary)
+                                                                        .size(11.0),
+                                                                    );
+                                                                }
+                                                                ui.with_layout(
+                                                                    egui::Layout::right_to_left(
+                                                                        egui::Align::Center,
+                                                                    ),
+                                                                    |ui| {
+                                                                        let is_copied = self
+                                                                            .copied_feedback
+                                                                            .as_ref()
+                                                                            .map(|(k, ts)| {
+                                                                                k == &msg.id
+                                                                                    && ts.elapsed()
+                                                                                        < Duration::from_secs(2)
+                                                                            })
+                                                                            .unwrap_or(false);
+                                                                        let (label, color) =
+                                                                            if is_copied {
+                                                                                (
+                                                                                    "Copied ✓",
+                                                                                    t.status_live,
+                                                                                )
+                                                                            } else {
+                                                                                (
+                                                                                    "Copy",
+                                                                                    t.text_muted,
+                                                                                )
+                                                                            };
+                                                                        let copy_btn =
+                                                                            egui::Button::new(
+                                                                                egui::RichText::new(
+                                                                                    label,
+                                                                                )
+                                                                                .color(color)
+                                                                                .size(10.5),
+                                                                            )
+                                                                            .fill(t.bg_surface_subtle)
+                                                                            .rounding(
+                                                                                t.rounding_badge,
+                                                                            );
+                                                                        if ui
+                                                                            .add(copy_btn)
+                                                                            .on_hover_text(
+                                                                                "Copy entire reply",
+                                                                            )
+                                                                            .clicked()
+                                                                        {
+                                                                            ui.ctx().copy_text(
+                                                                                msg.text.clone(),
+                                                                            );
+                                                                            self.copied_feedback =
+                                                                                Some((
+                                                                                    msg.id.clone(),
+                                                                                    Instant::now(),
+                                                                                ));
+                                                                        }
+                                                                    },
+                                                                );
+                                                            });
+                                                            ui.add_space(4.0);
+                                                            markdown::render_assistant_blocks(
+                                                                ui,
+                                                                &msg.id,
+                                                                &msg.text,
+                                                                max_bubble_w,
+                                                                t,
+                                                                &mut self.copied_feedback,
+                                                            );
+                                                        });
+                                                    });
+                                            },
+                                        );
                                     }
                                     MessageRole::System => {
                                         ui.horizontal(|ui| {
@@ -246,8 +332,13 @@ impl ChatWindow {
                             if is_thinking {
                                 ui.horizontal(|ui| {
                                     ui.add_space(8.0);
+                                    let thinking_label = if thinking_tokens > 0 {
+                                        format!("⋯ Thinking... ({thinking_tokens} tok)")
+                                    } else {
+                                        "⋯ Thinking...".to_string()
+                                    };
                                     ui.label(
-                                        egui::RichText::new("⋯ Thinking...")
+                                        egui::RichText::new(thinking_label)
                                             .color(t.text_secondary)
                                             .size(12.0)
                                             .italics(),
@@ -271,13 +362,12 @@ impl ChatWindow {
 
                         // 1. Vision Button
                         let vision_btn = egui::Button::new(
-                            egui::RichText::new("Cam")
-                                .color(t.text_primary)
-                                .size(11.5),
+                            egui::RichText::new("Cam").color(t.text_primary).size(11.5),
                         )
                         .rounding(t.rounding_control);
 
-                        if ui.add(vision_btn)
+                        if ui
+                            .add(vision_btn)
                             .on_hover_text("Send Screen Capture to Companion")
                             .clicked()
                         {
@@ -299,8 +389,13 @@ impl ChatWindow {
                         )
                         .rounding(t.rounding_control);
 
-                        if ui.add(mic_btn)
-                            .on_hover_text(if is_mic_muted { "Turn ON Mic" } else { "Mute Mic" })
+                        if ui
+                            .add(mic_btn)
+                            .on_hover_text(if is_mic_muted {
+                                "Turn ON Mic"
+                            } else {
+                                "Mute Mic"
+                            })
                             .clicked()
                         {
                             *on_toggle_mic = true;
@@ -326,7 +421,8 @@ impl ChatWindow {
                         .stroke(t.border_active_control)
                         .rounding(t.rounding_control);
 
-                        let enter_pressed = text_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        let enter_pressed =
+                            text_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                         let send_clicked = ui.add(send_btn).clicked();
 
                         if (enter_pressed || send_clicked) && !self.input_text.trim().is_empty() {
@@ -370,12 +466,24 @@ impl ChatWindow {
             t.hairline_subtle
         };
         let br = chat_rect.max - Vec2::new(4.0, 4.0);
-        ui.painter().line_segment([br - Vec2::new(8.0, 0.0), br - Vec2::new(0.0, 8.0)], grip_stroke);
-        ui.painter().line_segment([br - Vec2::new(4.0, 0.0), br - Vec2::new(0.0, 4.0)], grip_stroke);
+        ui.painter().line_segment(
+            [br - Vec2::new(8.0, 0.0), br - Vec2::new(0.0, 8.0)],
+            grip_stroke,
+        );
+        ui.painter().line_segment(
+            [br - Vec2::new(4.0, 0.0), br - Vec2::new(0.0, 4.0)],
+            grip_stroke,
+        );
 
         // Keep inside screen boundaries
-        self.pos.x = self.pos.x.clamp(10.0, (screen.width() - self.size.x - 10.0).max(10.0));
-        self.pos.y = self.pos.y.clamp(10.0, (screen.height() - self.size.y - 10.0).max(10.0));
+        self.pos.x = self
+            .pos
+            .x
+            .clamp(10.0, (screen.width() - self.size.x - 10.0).max(10.0));
+        self.pos.y = self
+            .pos
+            .y
+            .clamp(10.0, (screen.height() - self.size.y - 10.0).max(10.0));
 
         chat_rect
     }

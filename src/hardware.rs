@@ -283,7 +283,7 @@ fn compute_ngl_and_ctx(backend: &AcceleratorBackend, vram_mb: Option<u64>) -> (u
                 (99, 4096)
             }
             Some(mb) if mb < 16_384 => (99, 4096),
-            Some(_) => (99, 8192),
+            Some(_) => (99, 16384),
             None => (99, 4096),
         },
         _ => match vram_mb {
@@ -312,17 +312,45 @@ pub fn detect_hardware(backend_override: Option<&str>) -> HardwareProfile {
             ),
             "cuda13" | "cuda-13" => {
                 let (_, _, name, vram) = probe_nvidia().unwrap_or((13, 0, None, None));
-                (AcceleratorBackend::Cuda { major: 13, minor: 0 }, name, vram)
+                (
+                    AcceleratorBackend::Cuda {
+                        major: 13,
+                        minor: 0,
+                    },
+                    name,
+                    vram,
+                )
             }
             "cuda12" | "cuda-12" => {
                 let (_, _, name, vram) = probe_nvidia().unwrap_or((12, 4, None, None));
-                (AcceleratorBackend::Cuda { major: 12, minor: 4 }, name, vram)
+                (
+                    AcceleratorBackend::Cuda {
+                        major: 12,
+                        minor: 4,
+                    },
+                    name,
+                    vram,
+                )
             }
             "cuda" => {
                 if let Some((maj, min, name, vram)) = probe_nvidia() {
-                    (AcceleratorBackend::Cuda { major: maj, minor: min }, name, vram)
+                    (
+                        AcceleratorBackend::Cuda {
+                            major: maj,
+                            minor: min,
+                        },
+                        name,
+                        vram,
+                    )
                 } else {
-                    (AcceleratorBackend::Cuda { major: 12, minor: 4 }, None, None)
+                    (
+                        AcceleratorBackend::Cuda {
+                            major: 12,
+                            minor: 4,
+                        },
+                        None,
+                        None,
+                    )
                 }
             }
             "rocm" | "hip" => (AcceleratorBackend::Rocm, None, None),
@@ -441,44 +469,29 @@ pub fn select_release_assets(
     match (profile.os, profile.arch, &profile.backend) {
         (TargetOs::Windows, TargetArch::X64, AcceleratorBackend::Cuda { major, .. }) => {
             let (main, cudart) = if *major >= 13 {
-                if let Some(m13) = find_asset_matching(
-                    assets,
-                    &["bin-win-cuda-13", "-x64"],
-                    &["cudart"],
-                ) {
-                    let c13 = find_asset_matching(
-                        assets,
-                        &["cudart-llama-bin-win-cuda-13", "-x64"],
-                        &[],
-                    )
-                    .cloned();
+                if let Some(m13) =
+                    find_asset_matching(assets, &["bin-win-cuda-13", "-x64"], &["cudart"])
+                {
+                    let c13 =
+                        find_asset_matching(assets, &["cudart-llama-bin-win-cuda-13", "-x64"], &[])
+                            .cloned();
                     (m13.clone(), c13)
-                } else if let Some(m12) = find_asset_matching(
-                    assets,
-                    &["bin-win-cuda-12", "-x64"],
-                    &["cudart"],
-                ) {
-                    let c12 = find_asset_matching(
-                        assets,
-                        &["cudart-llama-bin-win-cuda-12", "-x64"],
-                        &[],
-                    )
-                    .cloned();
+                } else if let Some(m12) =
+                    find_asset_matching(assets, &["bin-win-cuda-12", "-x64"], &["cudart"])
+                {
+                    let c12 =
+                        find_asset_matching(assets, &["cudart-llama-bin-win-cuda-12", "-x64"], &[])
+                            .cloned();
                     (m12.clone(), c12)
                 } else {
                     return None;
                 }
-            } else if let Some(m12) = find_asset_matching(
-                assets,
-                &["bin-win-cuda-12", "-x64"],
-                &["cudart"],
-            ) {
-                let c12 = find_asset_matching(
-                    assets,
-                    &["cudart-llama-bin-win-cuda-12", "-x64"],
-                    &[],
-                )
-                .cloned();
+            } else if let Some(m12) =
+                find_asset_matching(assets, &["bin-win-cuda-12", "-x64"], &["cudart"])
+            {
+                let c12 =
+                    find_asset_matching(assets, &["cudart-llama-bin-win-cuda-12", "-x64"], &[])
+                        .cloned();
                 (m12.clone(), c12)
             } else {
                 return None;
@@ -529,15 +542,10 @@ pub fn select_release_assets(
             })
         }
         (TargetOs::Windows, TargetArch::Arm64, AcceleratorBackend::Cuda { .. }) => {
-            if let Some(m) =
-                find_asset_matching(assets, &["bin-win-cuda-", "-arm64"], &["cudart"])
+            if let Some(m) = find_asset_matching(assets, &["bin-win-cuda-", "-arm64"], &["cudart"])
             {
-                let c = find_asset_matching(
-                    assets,
-                    &["cudart-llama-bin-win-cuda-", "-arm64"],
-                    &[],
-                )
-                .cloned();
+                let c = find_asset_matching(assets, &["cudart-llama-bin-win-cuda-", "-arm64"], &[])
+                    .cloned();
                 Some(SelectedAssets {
                     tag: tag.to_string(),
                     main: m.clone(),

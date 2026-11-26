@@ -4,6 +4,7 @@ mod chat;
 mod companion;
 mod config;
 mod hardware;
+mod markdown;
 mod screen;
 mod theme;
 mod toolbar;

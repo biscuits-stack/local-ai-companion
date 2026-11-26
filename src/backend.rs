@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -25,9 +25,11 @@ You have three core capabilities: you can HEAR the user through their microphone
 you can TALK back naturally with expressive emotion and neural voice, and you can SEE the user's screen \
 whenever they ask or send a screenshot.\n\n\
 CRITICAL RULES:\n\
-1. Every sentence you speak MUST begin with an emotion bracket reflecting your tone, \
-such as [happy], [attentive], [curious], [vibing], [surprise], [surprisepout], [guilty], or [sad].\n\
-2. Keep your responses natural, concise, engaging, and conversational.\n\
+1. Start your reply with an emotion bracket reflecting your tone, \
+such as [happy], [attentive], [curious], [vibing], [surprise], [surprisepout], [guilty], or [sad] \
+(never place emotion brackets inside code blocks).\n\
+2. Keep casual conversation natural and concise, but provide complete, runnable code and clear explanations \
+whenever the user asks a programming or technical question.\n\
 3. When viewing a screenshot of the user's screen, observe it directly and give clear, accurate assistance based on what is visible.";
 
 const SCREENSHOT_TRIGGERS: &[&str] = &[
@@ -45,9 +47,14 @@ const SCREENSHOT_TRIGGERS: &[&str] = &[
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub enum BackendCommand {
-    SendMessage { text: String, force_screenshot: bool },
+    SendMessage {
+        text: String,
+        force_screenshot: bool,
+    },
     ToggleMic,
-    CaptureScreen { prompt: Option<String> },
+    CaptureScreen {
+        prompt: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -62,6 +69,14 @@ pub enum BackendEvent {
     AssistantMessage {
         text: String,
         emotion: CompanionEmotion,
+    },
+    AssistantThinkingProgress {
+        tokens: usize,
+    },
+    AssistantStreamUpdate {
+        text: String,
+        emotion: CompanionEmotion,
+        done: bool,
     },
     AssistantState {
         phase: String, // "thinking", "speaking", "idle"
@@ -190,7 +205,9 @@ impl BackendHandle {
 
     #[allow(dead_code)]
     pub fn capture_screen(&self, prompt: Option<String>) {
-        let _ = self.cmd_sender.send(BackendCommand::CaptureScreen { prompt });
+        let _ = self
+            .cmd_sender
+            .send(BackendCommand::CaptureScreen { prompt });
     }
 }
 
@@ -429,9 +446,7 @@ fn extract_archive_to_bin(
     }
     fs::create_dir_all(&tmp_dir).map_err(|e| format!("Failed creating extract_tmp: {e}"))?;
 
-    let low = archive_path
-        .to_string_lossy()
-        .to_ascii_lowercase();
+    let low = archive_path.to_string_lossy().to_ascii_lowercase();
 
     let extracted = if cfg!(windows) {
         let mut tar_cmd = Command::new("tar.exe");
@@ -493,7 +508,10 @@ fn extract_archive_to_bin(
             .status();
     }
 
-    println!("[Provisioner] Extracted {copied} binary/library file(s) to {:?}", bin_dir);
+    println!(
+        "[Provisioner] Extracted {copied} binary/library file(s) to {:?}",
+        bin_dir
+    );
     Ok(())
 }
 
@@ -598,7 +616,10 @@ fn ensure_runtime_provisioned(
     extract_archive_to_bin(&main_dest, &cfg.cache_dir, &cfg.bin_dir)?;
 
     if let Some(ref cudart) = selected.companion_cudart {
-        println!("[Provisioner] Downloading CUDA runtime DLLs: {}", cudart.name);
+        println!(
+            "[Provisioner] Downloading CUDA runtime DLLs: {}",
+            cudart.name
+        );
         let cudart_dest = cfg.cache_dir.join(&cudart.name);
         download_file_with_progress(
             &cudart.download_url,
@@ -684,7 +705,8 @@ fn ensure_models_provisioned(
     }
 
     if !model_ok {
-        let model_file = q2_name.ok_or_else(|| "Q2_0 GGUF file not found on Hugging Face".to_string())?;
+        let model_file =
+            q2_name.ok_or_else(|| "Q2_0 GGUF file not found on Hugging Face".to_string())?;
         let leaf = Path::new(&model_file)
             .file_name()
             .and_then(|n| n.to_str())
@@ -779,9 +801,9 @@ fn run_llama_supervisor(
                 "-fa",
                 "on",
                 "-ctk",
-                "f16",
+                &cfg.kv_cache_type,
                 "-ctv",
-                "f16",
+                &cfg.kv_cache_type,
                 "-c",
                 &effective_ctx.to_string(),
                 "-b",
@@ -790,6 +812,8 @@ fn run_llama_supervisor(
                 &cfg.ubatch_size.to_string(),
                 "--parallel",
                 &cfg.parallel.to_string(),
+                "--reasoning-budget",
+                &cfg.reasoning_budget.to_string(),
             ]);
 
             if let Some(bin_dir) = cfg.llama_server_bin.parent() {
@@ -986,7 +1010,10 @@ fn bootstrap_python_venv(base: &Path) -> Option<PathBuf> {
     );
 
     let mut mk_venv = Command::new(&sys_py);
-    mk_venv.args(["-m", "venv"]).arg(&venv_dir).current_dir(base);
+    mk_venv
+        .args(["-m", "venv"])
+        .arg(&venv_dir)
+        .current_dir(base);
     #[cfg(windows)]
     mk_venv.creation_flags(CREATE_NO_WINDOW);
 
@@ -995,7 +1022,9 @@ fn bootstrap_python_venv(base: &Path) -> Option<PathBuf> {
         return None;
     }
 
-    let venv_py = venv_python_candidates(base).into_iter().find(|p| p.exists())?;
+    let venv_py = venv_python_candidates(base)
+        .into_iter()
+        .find(|p| p.exists())?;
     println!("[Backend Supervisor] Installing Backend/requirements.txt into .venv...");
 
     let mut pip_cmd = Command::new(&venv_py);
@@ -1042,7 +1071,9 @@ fn try_start_local_backend_if_needed(
         .or_else(find_system_python);
 
     let Some(python_exe) = python_exe else {
-        println!("[Backend Supervisor] Python executable not found; skipping Python TTS/STT spawn.");
+        println!(
+            "[Backend Supervisor] Python executable not found; skipping Python TTS/STT spawn."
+        );
         return;
     };
 
@@ -1052,7 +1083,10 @@ fn try_start_local_backend_if_needed(
         return;
     }
 
-    println!("[Backend Supervisor] Spawning Kokoro TTS + Faster-Whisper backend from: {:?}", base);
+    println!(
+        "[Backend Supervisor] Spawning Kokoro TTS + Faster-Whisper backend from: {:?}",
+        base
+    );
 
     let mut cmd = Command::new(&python_exe);
     cmd.arg(&script).current_dir(&base);
@@ -1154,12 +1188,11 @@ fn run_websocket_listener(event_tx: Sender<BackendEvent>, is_connected: Arc<Atom
                                                 .unwrap_or("Idle");
                                             let emotion = CompanionEmotion::from_tag(emotion_tag);
                                             if !text.is_empty() {
-                                                let _ = event_tx.send(
-                                                    BackendEvent::AssistantMessage {
+                                                let _ =
+                                                    event_tx.send(BackendEvent::AssistantMessage {
                                                         text: text.to_string(),
                                                         emotion,
-                                                    },
-                                                );
+                                                    });
                                             }
                                         }
                                         _ => {}
@@ -1198,6 +1231,7 @@ fn run_websocket_listener(event_tx: Sender<BackendEvent>, is_connected: Arc<Atom
 }
 
 fn execute_llm_chat(
+    cfg: &RuntimeConfig,
     llm_base_url: &str,
     audio_base_url: &str,
     history: &mut Vec<serde_json::Value>,
@@ -1251,75 +1285,118 @@ fn execute_llm_chat(
         "model": "Ternary-Bonsai-2.5-27B-Q2_0",
         "messages": messages,
         "temperature": 0.7,
-        "max_tokens": 256
+        "max_tokens": cfg.max_tokens,
+        "stream": true
     });
 
     let chat_url = format!("{llm_base_url}/v1/chat/completions");
     match ureq::post(&chat_url)
-        .timeout(Duration::from_secs(60))
+        .timeout(Duration::from_secs(cfg.request_timeout_secs))
         .send_json(&payload)
     {
-        Ok(res) => match res.into_json::<serde_json::Value>() {
-            Ok(json) => {
-                let raw_reply = json
+        Ok(res) => {
+            let reader = BufReader::new(res.into_reader());
+            let mut content_buf = String::new();
+            let mut reasoning_buf = String::new();
+            let mut reasoning_tokens: usize = 0;
+
+            for line_res in reader.lines() {
+                let Ok(line) = line_res else {
+                    break;
+                };
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let Some(data) = trimmed.strip_prefix("data:") else {
+                    continue;
+                };
+                let data = data.trim();
+                if data == "[DONE]" {
+                    break;
+                }
+                let Ok(chunk) = serde_json::from_str::<serde_json::Value>(data) else {
+                    continue;
+                };
+                let Some(delta) = chunk
                     .get("choices")
                     .and_then(|c| c.get(0))
-                    .and_then(|c| c.get("message"))
-                    .and_then(|m| m.get("content"))
-                    .and_then(|s| s.as_str())
-                    .unwrap_or("")
-                    .trim()
-                    .to_string();
+                    .and_then(|c| c.get("delta"))
+                else {
+                    continue;
+                };
 
-                if raw_reply.is_empty() {
-                    let _ = event_tx.send(BackendEvent::Error(
-                        "Bonsai returned an empty response.".to_string(),
-                    ));
-                    let _ = event_tx.send(BackendEvent::AssistantState {
-                        phase: "idle".to_string(),
-                        emotion: CompanionEmotion::Idle,
-                    });
-                    return;
+                if let Some(rc) = delta.get("reasoning_content").and_then(|s| s.as_str()) {
+                    if !rc.is_empty() {
+                        reasoning_buf.push_str(rc);
+                        reasoning_tokens += 1;
+                        if reasoning_tokens == 1 || reasoning_tokens % 4 == 0 {
+                            let _ = event_tx.send(BackendEvent::AssistantThinkingProgress {
+                                tokens: reasoning_tokens,
+                            });
+                        }
+                    }
                 }
 
-                // Append plain text turns to rolling history (avoid persisting base64 screenshots)
-                history.push(serde_json::json!({ "role": "user", "content": user_text }));
-                history.push(serde_json::json!({ "role": "assistant", "content": raw_reply }));
-                if history.len() > 8 {
-                    let excess = history.len() - 8;
-                    history.drain(0..excess);
-                }
-
-                let emotion = CompanionEmotion::from_tag(&raw_reply);
-                let display_text = strip_emotion_for_display(&raw_reply);
-
-                let _ = event_tx.send(BackendEvent::AssistantMessage {
-                    text: display_text,
-                    emotion,
-                });
-                let _ = event_tx.send(BackendEvent::AssistantState {
-                    phase: "idle".to_string(),
-                    emotion,
-                });
-
-                // Trigger Kokoro TTS playback if voice is active (best-effort)
-                if !voice_muted.load(Ordering::Relaxed) {
-                    let speak_url = format!("{audio_base_url}/speak");
-                    let _ = ureq::post(&speak_url)
-                        .timeout(Duration::from_secs(2))
-                        .send_json(serde_json::json!({ "text": raw_reply }));
+                if let Some(piece) = delta.get("content").and_then(|s| s.as_str()) {
+                    if !piece.is_empty() {
+                        content_buf.push_str(piece);
+                        let emotion = CompanionEmotion::from_tag(&content_buf);
+                        let _ = event_tx.send(BackendEvent::AssistantStreamUpdate {
+                            text: strip_emotion_for_display(&content_buf),
+                            emotion,
+                            done: false,
+                        });
+                    }
                 }
             }
-            Err(e) => {
-                let _ = event_tx.send(BackendEvent::Error(format!(
-                    "Invalid JSON from Bonsai llama-server: {e}"
-                )));
+
+            let raw_reply = if !content_buf.trim().is_empty() {
+                content_buf.trim().to_string()
+            } else {
+                reasoning_buf.trim().to_string()
+            };
+
+            if raw_reply.is_empty() {
+                let _ = event_tx.send(BackendEvent::Error(
+                    "Bonsai returned an empty response.".to_string(),
+                ));
                 let _ = event_tx.send(BackendEvent::AssistantState {
                     phase: "idle".to_string(),
-                    emotion: CompanionEmotion::Sad,
+                    emotion: CompanionEmotion::Idle,
                 });
+                return;
             }
-        },
+
+            // Append plain text turns to rolling history (avoid persisting base64 screenshots)
+            history.push(serde_json::json!({ "role": "user", "content": user_text }));
+            history.push(serde_json::json!({ "role": "assistant", "content": raw_reply }));
+            if history.len() > 8 {
+                let excess = history.len() - 8;
+                history.drain(0..excess);
+            }
+
+            let emotion = CompanionEmotion::from_tag(&raw_reply);
+            let display_text = strip_emotion_for_display(&raw_reply);
+
+            let _ = event_tx.send(BackendEvent::AssistantStreamUpdate {
+                text: display_text,
+                emotion,
+                done: true,
+            });
+            let _ = event_tx.send(BackendEvent::AssistantState {
+                phase: "idle".to_string(),
+                emotion,
+            });
+
+            // Trigger Kokoro TTS playback if voice is active (best-effort)
+            if !voice_muted.load(Ordering::Relaxed) {
+                let speak_url = format!("{audio_base_url}/speak");
+                let _ = ureq::post(&speak_url)
+                    .timeout(Duration::from_secs(2))
+                    .send_json(serde_json::json!({ "text": raw_reply }));
+            }
+        }
         Err(ureq::Error::Status(503, _)) => {
             let _ = event_tx.send(BackendEvent::Error(
                 "Bonsai 27B is still loading into VRAM. Please wait a moment.".to_string(),
@@ -1367,6 +1444,7 @@ fn run_backend_worker(
                     force_screenshot,
                 } => {
                     execute_llm_chat(
+                        &cfg,
                         &llm_base_url,
                         &audio_base_url,
                         &mut history,
@@ -1404,6 +1482,7 @@ fn run_backend_worker(
                     let prompt_text =
                         prompt.unwrap_or_else(|| "What is on my screen right now?".to_string());
                     execute_llm_chat(
+                        &cfg,
                         &llm_base_url,
                         &audio_base_url,
                         &mut history,

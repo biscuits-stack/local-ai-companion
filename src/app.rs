@@ -1,5 +1,5 @@
-use std::time::Instant;
 use eframe::egui::{self, Vec2};
+use std::time::Instant;
 
 use crate::backend::{BackendEvent, BackendHandle};
 use crate::chat::ChatWindow;
@@ -21,6 +21,8 @@ pub struct DesktopCompanionApp {
     pub is_always_on_top: bool,
     pub toast: Option<Toast>,
     pub hit_test_mgr: WindowHitTestManager,
+    pub streaming_msg_idx: Option<usize>,
+    pub thinking_tokens: usize,
     pub start_time: Instant,
     pub last_frame_time: Instant,
 }
@@ -36,7 +38,8 @@ impl DesktopCompanionApp {
         let initial_messages = vec![ChatMessage {
             id: "sys_init".to_string(),
             role: MessageRole::System,
-            text: "AI Companion Online (Kokoro TTS, Whisper STT & Screen Vision ready).".to_string(),
+            text: "AI Companion Online (Kokoro TTS, Whisper STT & Screen Vision ready)."
+                .to_string(),
             emotion: Some(CompanionEmotion::Idle),
             timestamp: "Now".to_string(),
         }];
@@ -57,6 +60,8 @@ impl DesktopCompanionApp {
                 expires_at: 3.0,
             }),
             hit_test_mgr: WindowHitTestManager::new(),
+            streaming_msg_idx: None,
+            thinking_tokens: 0,
             start_time: Instant::now(),
             last_frame_time: Instant::now(),
         }
@@ -82,6 +87,8 @@ impl DesktopCompanionApp {
 
         self.companion.is_thinking = true;
         self.companion.emotion = CompanionEmotion::Thinking;
+        self.streaming_msg_idx = None;
+        self.thinking_tokens = 0;
         self.backend.send_message(text, force_screenshot);
     }
 }
@@ -102,7 +109,11 @@ impl eframe::App for DesktopCompanionApp {
         // 1. Process backend events
         while let Ok(event) = self.backend.event_receiver.try_recv() {
             match event {
-                BackendEvent::ServerStatus { connected: _, mic_active, bot_is_talking } => {
+                BackendEvent::ServerStatus {
+                    connected: _,
+                    mic_active,
+                    bot_is_talking,
+                } => {
                     self.is_mic_muted = !mic_active;
                     self.companion.is_listening = mic_active;
                     self.companion.is_speaking = bot_is_talking && !self.is_voice_muted;
@@ -120,7 +131,10 @@ impl eframe::App for DesktopCompanionApp {
                             self.show_toast(format!("Model: {detail}"), 6.0);
                         }
                         LlmStatus::LoadingModel => {
-                            self.show_toast("Bonsai 27B: Loading model into VRAM...".to_string(), 4.0);
+                            self.show_toast(
+                                "Bonsai 27B: Loading model into VRAM...".to_string(),
+                                4.0,
+                            );
                         }
                         LlmStatus::Ready => {
                             self.show_toast("Bonsai 27B: Ready".to_string(), 3.0);
@@ -137,6 +151,8 @@ impl eframe::App for DesktopCompanionApp {
                     self.companion.is_thinking = false;
                     self.companion.emotion = emotion;
                     self.companion.set_subtitle(text.clone(), current_time, 7.0);
+                    self.streaming_msg_idx = None;
+                    self.thinking_tokens = 0;
 
                     self.messages.push(ChatMessage {
                         id: format!("ai_{current_time}"),
@@ -147,6 +163,43 @@ impl eframe::App for DesktopCompanionApp {
                     });
                     self.chat_window.should_scroll_to_bottom = true;
                 }
+                BackendEvent::AssistantThinkingProgress { tokens } => {
+                    self.companion.is_thinking = true;
+                    self.companion.emotion = CompanionEmotion::Thinking;
+                    self.thinking_tokens = tokens;
+                    self.chat_window.should_scroll_to_bottom = true;
+                }
+                BackendEvent::AssistantStreamUpdate {
+                    text,
+                    emotion,
+                    done,
+                } => {
+                    self.companion.is_thinking = false;
+                    self.companion.emotion = emotion;
+
+                    if let Some(idx) = self.streaming_msg_idx {
+                        if let Some(msg) = self.messages.get_mut(idx) {
+                            msg.text = text.clone();
+                            msg.emotion = Some(emotion);
+                        }
+                    } else {
+                        self.messages.push(ChatMessage {
+                            id: format!("ai_{current_time}"),
+                            role: MessageRole::Assistant,
+                            text: text.clone(),
+                            emotion: Some(emotion),
+                            timestamp: "Now".to_string(),
+                        });
+                        self.streaming_msg_idx = Some(self.messages.len() - 1);
+                    }
+
+                    if done {
+                        self.companion.set_subtitle(text, current_time, 7.0);
+                        self.streaming_msg_idx = None;
+                        self.thinking_tokens = 0;
+                    }
+                    self.chat_window.should_scroll_to_bottom = true;
+                }
                 BackendEvent::AssistantState { phase, emotion } => {
                     self.companion.emotion = emotion;
                     self.companion.is_thinking = phase == "thinking";
@@ -154,11 +207,14 @@ impl eframe::App for DesktopCompanionApp {
                         self.companion.is_speaking = !self.is_voice_muted;
                     } else if phase == "idle" {
                         self.companion.is_speaking = false;
+                        self.thinking_tokens = 0;
                     }
                 }
                 BackendEvent::Error(err) => {
                     self.show_toast(format!("⚠️ {err}"), 4.0);
                     self.companion.is_thinking = false;
+                    self.streaming_msg_idx = None;
+                    self.thinking_tokens = 0;
                 }
             }
         }
@@ -190,6 +246,7 @@ impl eframe::App for DesktopCompanionApp {
                     ui,
                     &self.messages,
                     self.companion.is_thinking,
+                    self.thinking_tokens,
                     self.is_mic_muted,
                     &mut on_send,
                     &mut on_toggle_mic,
@@ -225,7 +282,12 @@ impl eframe::App for DesktopCompanionApp {
             if actions.toggle_mic {
                 self.backend.toggle_mic();
                 self.show_toast(
-                    if self.is_mic_muted { "Mic: LISTENING" } else { "Mic: MUTED" }.to_string(),
+                    if self.is_mic_muted {
+                        "Mic: LISTENING"
+                    } else {
+                        "Mic: MUTED"
+                    }
+                    .to_string(),
                     2.5,
                 );
             }
@@ -234,7 +296,12 @@ impl eframe::App for DesktopCompanionApp {
                 self.is_voice_muted = !self.is_voice_muted;
                 self.backend.set_voice_muted(self.is_voice_muted);
                 self.show_toast(
-                    if self.is_voice_muted { "AI Voice: MUTED" } else { "AI Voice: ACTIVE" }.to_string(),
+                    if self.is_voice_muted {
+                        "AI Voice: MUTED"
+                    } else {
+                        "AI Voice: ACTIVE"
+                    }
+                    .to_string(),
                     2.5,
                 );
             }
@@ -246,7 +313,12 @@ impl eframe::App for DesktopCompanionApp {
             if actions.toggle_roam {
                 self.companion.is_roaming = !self.companion.is_roaming;
                 self.show_toast(
-                    if self.companion.is_roaming { "Roaming: ON" } else { "Companion Parked" }.to_string(),
+                    if self.companion.is_roaming {
+                        "Roaming: ON"
+                    } else {
+                        "Companion Parked"
+                    }
+                    .to_string(),
                     2.5,
                 );
             }
@@ -265,7 +337,12 @@ impl eframe::App for DesktopCompanionApp {
                 };
                 ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(level));
                 self.show_toast(
-                    if self.is_always_on_top { "Always on Top: ON" } else { "Always on Top: OFF" }.to_string(),
+                    if self.is_always_on_top {
+                        "Always on Top: ON"
+                    } else {
+                        "Always on Top: OFF"
+                    }
+                    .to_string(),
                     2.5,
                 );
             }
