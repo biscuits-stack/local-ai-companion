@@ -46,7 +46,7 @@ impl DesktopCompanionApp {
             toolbar,
             chat_window,
             backend,
-            llm_status: LlmStatus::Starting,
+            llm_status: LlmStatus::DetectingHardware,
             messages: initial_messages,
             is_chat_open: false,
             is_mic_muted: true,
@@ -110,6 +110,15 @@ impl eframe::App for DesktopCompanionApp {
                 BackendEvent::LlmStatusChanged(status) => {
                     self.llm_status = status.clone();
                     match status {
+                        LlmStatus::DetectingHardware => {
+                            self.show_toast("Detecting GPU & compute backend...".to_string(), 2.5);
+                        }
+                        LlmStatus::DownloadingRuntime(detail) => {
+                            self.show_toast(format!("Runtime: {detail}"), 6.0);
+                        }
+                        LlmStatus::DownloadingModel(detail) => {
+                            self.show_toast(format!("Model: {detail}"), 6.0);
+                        }
                         LlmStatus::LoadingModel => {
                             self.show_toast("Bonsai 27B: Loading model into VRAM...".to_string(), 4.0);
                         }
@@ -119,7 +128,9 @@ impl eframe::App for DesktopCompanionApp {
                         LlmStatus::Error(err) => {
                             self.show_toast(format!("Bonsai Error: {err}"), 5.0);
                         }
-                        LlmStatus::Starting => {}
+                        LlmStatus::Starting => {
+                            self.show_toast("Starting Bonsai 27B server...".to_string(), 2.5);
+                        }
                     }
                 }
                 BackendEvent::AssistantMessage { text, emotion } => {

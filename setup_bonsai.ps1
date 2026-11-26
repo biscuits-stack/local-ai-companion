@@ -1,8 +1,9 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 param(
     [string]$RuntimeRoot = "",
-    [switch]$SkipBuild,
-    [switch]$SkipDownload
+    [string]$Backend = "auto",
+    [switch]$SkipRuntime,
+    [switch]$SkipModel
 )
 
 $ErrorActionPreference = "Stop"
@@ -14,240 +15,276 @@ if ([string]::IsNullOrWhiteSpace($RuntimeRoot)) {
 $ConfigPath = Join-Path $RepoRoot "config.toml"
 
 Write-Host "==================================================================" -ForegroundColor Cyan
-Write-Host "  PrismML Ternary-Bonsai-2.5-27B-GGUF + CUDA Setup" -ForegroundColor Cyan
+Write-Host "  PrismML Ternary-Bonsai-2.5-27B-GGUF Plug-and-Play Bootstrapper" -ForegroundColor Cyan
 Write-Host "  Runtime Root : $RuntimeRoot"
 Write-Host "  Config File  : $ConfigPath"
 Write-Host "==================================================================" -ForegroundColor Cyan
 
-# Verify target drive exists when a rooted path is supplied
 $DriveRoot = [System.IO.Path]::GetPathRoot($RuntimeRoot)
 if ($DriveRoot -and -not (Test-Path $DriveRoot)) {
     Write-Error "Target drive '$DriveRoot' does not exist on this system. Pass -RuntimeRoot <path> to use another path."
     exit 2
 }
 
-$LlamaSrcDir = Join-Path $RuntimeRoot "llama-cpp-prism"
-$BinDir      = Join-Path $RuntimeRoot "bin"
-$ModelsDir   = Join-Path $RuntimeRoot "models"
+$BinDir    = Join-Path $RuntimeRoot "bin"
+$ModelsDir = Join-Path $RuntimeRoot "models"
+$CacheDir  = Join-Path $RuntimeRoot "cache"
 
-New-Item -ItemType Directory -Force -Path $RuntimeRoot, $BinDir, $ModelsDir | Out-Null
-
-function Resolve-Tool {
-    param(
-        [string]$ExeName,
-        [string[]]$ExtraPaths
-    )
-    $cmd = Get-Command $ExeName -ErrorAction SilentlyContinue
-    if ($cmd) { return $cmd.Source }
-    foreach ($p in $ExtraPaths) {
-        if ($p -and (Test-Path $p)) {
-            $dir = Split-Path -Parent $p
-            if ($env:PATH -notlike "*$dir*") {
-                $env:PATH = "$dir;$env:PATH"
-            }
-            return $p
-        }
-    }
-    return $null
-}
-
-$CudaBins = @()
-if ($env:CUDA_PATH) {
-    $CudaBins += (Join-Path $env:CUDA_PATH "bin\nvcc.exe")
-}
-if ($env:ProgramFiles) {
-    $CudaToolkitRoot = Join-Path $env:ProgramFiles "NVIDIA GPU Computing Toolkit\CUDA"
-    if (Test-Path $CudaToolkitRoot) {
-        $CudaBins += Get-ChildItem $CudaToolkitRoot -Directory |
-            Sort-Object Name -Descending |
-            ForEach-Object { Join-Path $_.FullName "bin\nvcc.exe" }
-    }
-}
-
-$VsCmakeBins = @()
-if ($env:ProgramFiles) {
-    $VsRoot = Join-Path $env:ProgramFiles "Microsoft Visual Studio"
-    if (Test-Path $VsRoot) {
-        $VsCmakeBins += Get-ChildItem $VsRoot -Directory | ForEach-Object {
-            Get-ChildItem $_.FullName -Directory -ErrorAction SilentlyContinue |
-                ForEach-Object { Join-Path $_.FullName "Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" }
-        }
-    }
-}
-
-$GitPaths = @()
-if ($env:ProgramFiles) {
-    $GitPaths += (Join-Path $env:ProgramFiles "Git\cmd\git.exe")
-    $GitPaths += (Join-Path $env:ProgramFiles "Git\bin\git.exe")
-}
-if ($env:LOCALAPPDATA) {
-    $GitPaths += (Join-Path $env:LOCALAPPDATA "Programs\Git\cmd\git.exe")
-}
-
-$CmakePaths = @()
-if ($env:ProgramFiles) {
-    $CmakePaths += (Join-Path $env:ProgramFiles "CMake\bin\cmake.exe")
-}
-$CmakePaths += $VsCmakeBins
-
-$HfPaths = @(
-    (Join-Path $RepoRoot "backend\python_env\Scripts\hf.exe"),
-    (Join-Path $RepoRoot "backend\python_env\Scripts\huggingface-cli.exe"),
-    (Join-Path $RepoRoot "runtime\backend\python_env\Scripts\hf.exe"),
-    (Join-Path $RepoRoot "runtime\backend\python_env\Scripts\huggingface-cli.exe")
-)
-
-$GitExe   = Resolve-Tool "git.exe" $GitPaths
-$CmakeExe = Resolve-Tool "cmake.exe" $CmakePaths
-$NvccExe  = Resolve-Tool "nvcc.exe" $CudaBins
-$HfExe    = Resolve-Tool "hf.exe" $HfPaths
-
-Write-Host ""
-Write-Host "[Tool Discovery]" -ForegroundColor Yellow
-Write-Host "  git   : $(if ($GitExe) { $GitExe } else { 'NOT FOUND' })"
-Write-Host "  cmake : $(if ($CmakeExe) { $CmakeExe } else { 'NOT FOUND' })"
-Write-Host "  nvcc  : $(if ($NvccExe) { $NvccExe } else { 'NOT FOUND' })"
-Write-Host "  hf    : $(if ($HfExe) { $HfExe } else { 'NOT FOUND (will use curl.exe)' })"
-
-$MissingBuildTools = @()
-if (-not $GitExe)   { $MissingBuildTools += "Git" }
-if (-not $CmakeExe) { $MissingBuildTools += "CMake" }
-if (-not $NvccExe)  { $MissingBuildTools += "NVIDIA CUDA Toolkit (nvcc)" }
+New-Item -ItemType Directory -Force -Path $RuntimeRoot, $BinDir, $ModelsDir, $CacheDir | Out-Null
 
 # ------------------------------------------------------------------------------
-# PART 1: Clone & Build PrismML llama.cpp Fork (CUDA)
+# 1. Hardware & Backend Auto-Detection (No Compiler Required)
 # ------------------------------------------------------------------------------
-if (-not $SkipBuild) {
-    Write-Host ""
-    Write-Host "[1/3] PrismML llama.cpp CUDA Build" -ForegroundColor Cyan
+function Detect-HardwareProfile {
+    param([string]$RequestedBackend)
 
-    if ($MissingBuildTools.Count -gt 0) {
-        Write-Warning ("Skipping llama.cpp CUDA build because required tools are missing: " + ($MissingBuildTools -join ", "))
-    } else {
-        if (-not (Test-Path (Join-Path $LlamaSrcDir ".git"))) {
-            Write-Host "Cloning https://github.com/PrismML-Eng/llama.cpp.git into $LlamaSrcDir ..."
-            & $GitExe clone https://github.com/PrismML-Eng/llama.cpp.git $LlamaSrcDir
-            if ($LASTEXITCODE -ne 0) { throw "git clone failed with exit code $LASTEXITCODE" }
-        } else {
-            Write-Host "Updating existing repository in $LlamaSrcDir ..."
-            Push-Location $LlamaSrcDir
-            & $GitExe fetch --all --prune
-            Pop-Location
-        }
+    $arch = if ($env:PROCESSOR_ARCHITECTURE -match "ARM64" -or $env:PROCESSOR_ARCHITEW6432 -match "ARM64") { "arm64" } else { "x64" }
+    $detected = $RequestedBackend.ToLowerInvariant()
+    $cudaMajor = 12
+    $cudaMinor = 4
+    $gpuName = "Unknown"
+    $vramMb = 0
 
-        Push-Location $LlamaSrcDir
+    $nvidiaSmi = Get-Command "nvidia-smi.exe" -ErrorAction SilentlyContinue
+    if ($nvidiaSmi) {
         try {
-            $remoteBranches = & $GitExe branch -r
-            if ($remoteBranches -match "pr/q2_0-cuda") {
-                Write-Host "Checking out branch pr/q2_0-cuda ..."
-                & $GitExe checkout pr/q2_0-cuda
-                if ($LASTEXITCODE -ne 0) {
-                    & $GitExe checkout -b pr/q2_0-cuda origin/pr/q2_0-cuda
-                }
+            $smiOut = (& $nvidiaSmi.Source 2>$null) -join "`n"
+            if ($smiOut -match "CUDA Version:\s*(\d+)\.(\d+)") {
+                $cudaMajor = [int]$Matches[1]
+                $cudaMinor = [int]$Matches[2]
+            }
+            $csvOut = (& $nvidiaSmi.Source --query-gpu=name,memory.total --format=csv,noheader,nounits 2>$null) | Select-Object -First 1
+            if ($csvOut -and $csvOut -match "^([^,]+),\s*(\d+)") {
+                $gpuName = $Matches[1].Trim()
+                $vramMb  = [int]$Matches[2]
+            }
+        } catch {}
+    }
+
+    if ($detected -eq "auto") {
+        if ($nvidiaSmi -or (Test-Path "$env:WINDIR\System32\nvcuda.dll")) {
+            $detected = if ($cudaMajor -ge 13) { "cuda13" } else { "cuda12" }
+        } else {
+            $gpus = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue
+            $amdGpu = $gpus | Where-Object { $_.PNPDeviceID -match "VEN_1002" } | Select-Object -First 1
+            $intelGpu = $gpus | Where-Object { $_.PNPDeviceID -match "VEN_8086" } | Select-Object -First 1
+            if ($amdGpu) {
+                $detected = "rocm"
+                $gpuName = $amdGpu.Name
+                if ($amdGpu.AdapterRAM) { $vramMb = [math]::Floor($amdGpu.AdapterRAM / 1MB) }
+            } elseif ($intelGpu) {
+                $detected = "sycl"
+                $gpuName = $intelGpu.Name
+                if ($intelGpu.AdapterRAM) { $vramMb = [math]::Floor($intelGpu.AdapterRAM / 1MB) }
+            } elseif (Test-Path "$env:WINDIR\System32\vulkan-1.dll") {
+                $detected = "vulkan"
+                $gpuName = "Vulkan GPU"
             } else {
-                Write-Host "Branch pr/q2_0-cuda not found; keeping default branch."
+                $detected = "cpu"
+                $gpuName = "CPU"
             }
-
-            Write-Host "Configuring CMake with -DGGML_CUDA=ON ..."
-            & $CmakeExe -B build -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release
-            if ($LASTEXITCODE -ne 0) { throw "CMake configure failed with exit code $LASTEXITCODE" }
-
-            Write-Host "Building llama-server (Release) ..."
-            & $CmakeExe --build build --config Release --target llama-server -j
-            if ($LASTEXITCODE -ne 0) { throw "CMake build failed with exit code $LASTEXITCODE" }
-
-            $SearchDirs = @(
-                (Join-Path $LlamaSrcDir "build\bin\Release"),
-                (Join-Path $LlamaSrcDir "build\bin")
-            )
-
-            $CopiedServer = $false
-            foreach ($dir in $SearchDirs) {
-                $serverCandidate = Join-Path $dir "llama-server.exe"
-                if (Test-Path $serverCandidate) {
-                    Copy-Item -Path $serverCandidate -Destination $BinDir -Force
-                    Get-ChildItem -Path $dir -Filter "ggml*.dll" -ErrorAction SilentlyContinue |
-                        Copy-Item -Destination $BinDir -Force
-                    Get-ChildItem -Path $dir -Filter "llama*.dll" -ErrorAction SilentlyContinue |
-                        Copy-Item -Destination $BinDir -Force
-                    $CopiedServer = $true
-                    break
-                }
-            }
-
-            if (-not $CopiedServer) {
-                throw "Build finished, but llama-server.exe was not found in build\bin\Release or build\bin."
-            }
-
-            Write-Host "Copied llama-server.exe and runtime DLLs to $BinDir" -ForegroundColor Green
-        } finally {
-            Pop-Location
         }
+    }
+
+    return [PSCustomObject]@{
+        Arch      = $arch
+        Backend   = $detected
+        CudaMajor = $cudaMajor
+        CudaMinor = $cudaMinor
+        GpuName   = $gpuName
+        VramMb    = $vramMb
+    }
+}
+
+$Profile = Detect-HardwareProfile -RequestedBackend $Backend
+Write-Host ""
+Write-Host "[1/3] Hardware Detection" -ForegroundColor Yellow
+Write-Host "  Arch    : win-$($Profile.Arch)"
+Write-Host "  GPU     : $($Profile.GpuName) (VRAM: $($Profile.VramMb) MiB)"
+Write-Host "  Backend : $($Profile.Backend) (CUDA $($Profile.CudaMajor).$($Profile.CudaMinor))"
+
+# ------------------------------------------------------------------------------
+# 2. Download & Extract Pre-Built PrismML llama-server.exe Release
+# ------------------------------------------------------------------------------
+$ServerBin = Join-Path $BinDir "llama-server.exe"
+
+function Download-FileWithResume {
+    param([string]$Url, [string]$DestPath)
+    if ((Test-Path $DestPath) -and ((Get-Item $DestPath).Length -gt 1024)) {
+        Write-Host "  Using cached archive: $DestPath"
+        return
+    }
+    $part = "$DestPath.part"
+    if ((Test-Path $part) -and ((Get-Item $part).Length -le 1024)) {
+        Remove-Item -Force $part -ErrorAction SilentlyContinue
+    }
+    Write-Host "  Downloading $Url -> $DestPath ..."
+    & curl.exe -fL -C - --connect-timeout 15 --speed-limit 10240 --speed-time 20 --retry 6 --retry-delay 2 --retry-all-errors $Url -o $part
+    if ($LASTEXITCODE -ne 0) {
+        throw "curl.exe failed with exit code $LASTEXITCODE downloading $Url"
+    }
+    Move-Item -Path $part -Destination $DestPath -Force
+}
+
+function Extract-Binaries {
+    param([string]$ArchivePath, [string]$OutBinDir)
+    $tmpDir = Join-Path $CacheDir ("extract_" + [System.IO.Path]::GetFileNameWithoutExtension($ArchivePath))
+    if (Test-Path $tmpDir) { Remove-Item -Recurse -Force $tmpDir }
+    New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
+
+    Write-Host "  Extracting $(Split-Path -Leaf $ArchivePath) ..."
+    $tarExe = Get-Command "tar.exe" -ErrorAction SilentlyContinue
+    if ($tarExe) {
+        & $tarExe.Source -xf $ArchivePath -C $tmpDir
+        if ($LASTEXITCODE -ne 0) {
+            Expand-Archive -Path $ArchivePath -DestinationPath $tmpDir -Force
+        }
+    } else {
+        Expand-Archive -Path $ArchivePath -DestinationPath $tmpDir -Force
+    }
+
+    $copied = 0
+    Get-ChildItem -Path $tmpDir -Recurse -File | Where-Object {
+        $_.Name -eq "llama-server.exe" -or $_.Extension -ieq ".dll"
+    } | ForEach-Object {
+        Copy-Item -Path $_.FullName -Destination (Join-Path $OutBinDir $_.Name) -Force
+        $copied++
+    }
+    Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+    Write-Host "  Installed $copied runtime file(s) into $OutBinDir" -ForegroundColor Green
+}
+
+if (-not $SkipRuntime) {
+    Write-Host ""
+    Write-Host "[2/3] Fetching Pre-Built PrismML llama.cpp Release ..." -ForegroundColor Cyan
+
+    $Headers = @{ "User-Agent" = "LocalAI-Companion-Setup" }
+    $Releases = Invoke-RestMethod -Uri "https://api.github.com/repos/PrismML-Eng/llama.cpp/releases?per_page=6" -Headers $Headers -TimeoutSec 30
+
+    $SelectedRelease = $null
+    $MainAsset = $null
+    $CudartAsset = $null
+
+    foreach ($rel in $Releases) {
+        if (-not $rel.assets -or $rel.assets.Count -eq 0) { continue }
+        $assets = $rel.assets
+        $archTag = "-$($Profile.Arch)"
+
+        switch -Wildcard ($Profile.Backend) {
+            "cuda13" {
+                $MainAsset = $assets | Where-Object { $_.name -match "bin-win-cuda-13.*$archTag\.zip$" -and $_.name -notmatch "cudart" } | Select-Object -First 1
+                if ($MainAsset) {
+                    $CudartAsset = $assets | Where-Object { $_.name -match "cudart-llama-bin-win-cuda-13.*$archTag\.zip$" } | Select-Object -First 1
+                } else {
+                    $MainAsset = $assets | Where-Object { $_.name -match "bin-win-cuda-12.*$archTag\.zip$" -and $_.name -notmatch "cudart" } | Select-Object -First 1
+                    $CudartAsset = $assets | Where-Object { $_.name -match "cudart-llama-bin-win-cuda-12.*$archTag\.zip$" } | Select-Object -First 1
+                }
+                break
+            }
+            "cuda*" {
+                $MainAsset = $assets | Where-Object { $_.name -match "bin-win-cuda-12.*$archTag\.zip$" -and $_.name -notmatch "cudart" } | Select-Object -First 1
+                if ($MainAsset) {
+                    $CudartAsset = $assets | Where-Object { $_.name -match "cudart-llama-bin-win-cuda-12.*$archTag\.zip$" } | Select-Object -First 1
+                }
+                break
+            }
+            "rocm" {
+                $MainAsset = $assets | Where-Object { $_.name -match "bin-win-hip-radeon$archTag\.zip$" } | Select-Object -First 1
+                if (-not $MainAsset) { $MainAsset = $assets | Where-Object { $_.name -match "bin-win-vulkan$archTag\.zip$" } | Select-Object -First 1 }
+                break
+            }
+            "sycl" {
+                $MainAsset = $assets | Where-Object { $_.name -match "bin-win-sycl$archTag\.zip$" } | Select-Object -First 1
+                if (-not $MainAsset) { $MainAsset = $assets | Where-Object { $_.name -match "bin-win-vulkan$archTag\.zip$" } | Select-Object -First 1 }
+                break
+            }
+            "vulkan" {
+                $MainAsset = $assets | Where-Object { $_.name -match "bin-win-vulkan$archTag\.zip$" } | Select-Object -First 1
+                break
+            }
+            default {
+                $MainAsset = $assets | Where-Object { $_.name -match "bin-win-cpu$archTag\.zip$" } | Select-Object -First 1
+                break
+            }
+        }
+
+        if ($MainAsset) {
+            $SelectedRelease = $rel
+            break
+        }
+    }
+
+    if (-not $MainAsset) {
+        throw "Could not find a matching pre-built PrismML release archive for win-$($Profile.Arch) / $($Profile.Backend)."
+    }
+
+    Write-Host "  Selected Release : $($SelectedRelease.tag_name)"
+    Write-Host "  Main Archive     : $($MainAsset.name)"
+    if ($CudartAsset) { Write-Host "  CUDA Runtime Zip : $($CudartAsset.name)" }
+
+    $MainZipPath = Join-Path $CacheDir $MainAsset.name
+    Download-FileWithResume -Url $MainAsset.browser_download_url -DestPath $MainZipPath
+    Extract-Binaries -ArchivePath $MainZipPath -OutBinDir $BinDir
+
+    if ($CudartAsset) {
+        $CudartZipPath = Join-Path $CacheDir $CudartAsset.name
+        Download-FileWithResume -Url $CudartAsset.browser_download_url -DestPath $CudartZipPath
+        Extract-Binaries -ArchivePath $CudartZipPath -OutBinDir $BinDir
     }
 }
 
 # ------------------------------------------------------------------------------
-# PART 2: Query Hugging Face & Download Q2_0 Model + mmproj
+# 3. Verify / Download Ternary-Bonsai-2.5-27B-Q2_0 + mmproj from Hugging Face
 # ------------------------------------------------------------------------------
 $ModelFilename  = "Ternary-Bonsai-2.5-27B-Q2_0.gguf"
 $MmprojFilename = $null
 $RepoId         = "prism-ml/Ternary-Bonsai-2.5-27B-GGUF"
 
-if (-not $SkipDownload) {
+if (-not $SkipModel) {
     Write-Host ""
-    Write-Host "[2/3] Querying Hugging Face repo $RepoId ..." -ForegroundColor Cyan
+    Write-Host "[3/3] Verifying Hugging Face Model & Vision Projector ($RepoId) ..." -ForegroundColor Cyan
 
-    $ApiUrl = "https://huggingface.co/api/models/$RepoId"
-    $RepoMeta = Invoke-RestMethod -Uri $ApiUrl -Method Get -TimeoutSec 30
-    $Files = $RepoMeta.siblings | ForEach-Object { $_.rfilename }
+    $ExistingModel = Join-Path $ModelsDir $ModelFilename
+    $ExistingMmproj = Get-ChildItem -Path $ModelsDir -Filter "*mmproj*.gguf" -ErrorAction SilentlyContinue | Select-Object -First 1
 
-    $ExactQ2 = $Files | Where-Object { $_ -eq $ModelFilename } | Select-Object -First 1
-    if (-not $ExactQ2) {
-        $ExactQ2 = $Files | Where-Object { $_ -match "Q2_0.*\.gguf$" } | Select-Object -First 1
-    }
-    if (-not $ExactQ2) {
-        throw "Could not find Q2_0 GGUF file in $RepoId. Available files: $($Files -join ', ')"
-    }
-    $ModelFilename = $ExactQ2
+    if ((Test-Path $ExistingModel) -and ((Get-Item $ExistingModel).Length -gt 1MB) -and $ExistingMmproj) {
+        $MmprojFilename = $ExistingMmproj.Name
+        Write-Host "  Model & mmproj already present in $ModelsDir — skipping download." -ForegroundColor Green
+    } else {
+        $ApiUrl = "https://huggingface.co/api/models/$RepoId"
+        $RepoMeta = Invoke-RestMethod -Uri $ApiUrl -Method Get -TimeoutSec 30
+        $Files = $RepoMeta.siblings | ForEach-Object { $_.rfilename }
 
-    $MmprojFilename = $Files | Where-Object { $_ -match "^mmproj.*\.gguf$" } | Select-Object -First 1
-    if (-not $MmprojFilename) {
+        $ExactQ2 = $Files | Where-Object { $_ -eq $ModelFilename } | Select-Object -First 1
+        if (-not $ExactQ2) { $ExactQ2 = $Files | Where-Object { $_ -match "Q2_0.*\.gguf$" } | Select-Object -First 1 }
+        if (-not $ExactQ2) { throw "Could not find Q2_0 GGUF file in $RepoId." }
+        $ModelFilename = $ExactQ2
+
         $MmprojFilename = $Files | Where-Object { $_ -match "mmproj.*\.gguf$" } | Select-Object -First 1
-    }
 
-    Write-Host "  Model file  : $ModelFilename"
-    Write-Host "  Vision file : $(if ($MmprojFilename) { $MmprojFilename } else { 'None listed in repo' })"
-
-    $ToDownload = @($ModelFilename)
-    if ($MmprojFilename) {
-        $ToDownload += $MmprojFilename
-    }
-
-    foreach ($File in $ToDownload) {
-        $DestPath = Join-Path $ModelsDir (Split-Path -Leaf $File)
-        if ($HfExe) {
-            Write-Host "Downloading $File via hf CLI into $ModelsDir ..."
-            & $HfExe download $RepoId $File --local-dir $ModelsDir
-            if ($LASTEXITCODE -ne 0) {
-                throw "hf download failed for $File with exit code $LASTEXITCODE"
+        $HfCmd = Get-Command "hf.exe" -ErrorAction SilentlyContinue
+        foreach ($File in @($ModelFilename, $MmprojFilename) | Where-Object { $_ }) {
+            $DestPath = Join-Path $ModelsDir (Split-Path -Leaf $File)
+            if ((Test-Path $DestPath) -and ((Get-Item $DestPath).Length -gt 1MB)) {
+                Write-Host "  Already present: $DestPath"
+                continue
             }
-        } else {
-            $DownloadUrl = "https://huggingface.co/$RepoId/resolve/main/$File"
-            Write-Host "Downloading $DownloadUrl -> $DestPath ..."
-            & curl.exe -fL -C - --progress-bar $DownloadUrl -o $DestPath
-            if ($LASTEXITCODE -ne 0) {
-                throw "curl.exe download failed for $File with exit code $LASTEXITCODE"
+            if ($HfCmd) {
+                & $HfCmd.Source download $RepoId $File --local-dir $ModelsDir
+                if ($LASTEXITCODE -ne 0) { throw "hf download failed for $File" }
+            } else {
+                $DownloadUrl = "https://huggingface.co/$RepoId/resolve/main/$File"
+                Write-Host "  Downloading $DownloadUrl -> $DestPath ..."
+                & curl.exe -fL -C - --progress-bar $DownloadUrl -o $DestPath
+                if ($LASTEXITCODE -ne 0) { throw "curl.exe download failed for $File" }
             }
         }
     }
 }
 
 # ------------------------------------------------------------------------------
-# PART 3: Write config.toml (folder-relative paths when inside $RepoRoot)
+# Write folder-relative config.toml
 # ------------------------------------------------------------------------------
-Write-Host ""
-Write-Host "[3/3] Updating $ConfigPath ..." -ForegroundColor Cyan
-
 function To-ConfigPath {
     param([string]$AbsPath, [string]$BaseDir)
     $normAbs  = [System.IO.Path]::GetFullPath($AbsPath)
@@ -258,25 +295,14 @@ function To-ConfigPath {
     return $normAbs.Replace("\", "\\")
 }
 
-$ResolvedServerBin = Join-Path $BinDir "llama-server.exe"
 $ResolvedModelPath = Join-Path $ModelsDir (Split-Path -Leaf $ModelFilename)
-$ResolvedMmprojPath = ""
-if ($MmprojFilename) {
-    $CandidateMmproj = Join-Path $ModelsDir (Split-Path -Leaf $MmprojFilename)
-    if (Test-Path $CandidateMmproj) {
-        $ResolvedMmprojPath = $CandidateMmproj
-    }
-} else {
-    $DiscoveredMmproj = Get-ChildItem -Path $ModelsDir -Filter "mmproj*.gguf" -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($DiscoveredMmproj) {
-        $ResolvedMmprojPath = $DiscoveredMmproj.FullName
-    }
-}
+$DiscoveredMmproj  = Get-ChildItem -Path $ModelsDir -Filter "*mmproj*.gguf" -ErrorAction SilentlyContinue | Select-Object -First 1
+$ResolvedMmproj    = if ($DiscoveredMmproj) { $DiscoveredMmproj.FullName } else { "" }
 
 $CfgRoot   = To-ConfigPath $RuntimeRoot $RepoRoot
-$CfgBin    = To-ConfigPath $ResolvedServerBin $RepoRoot
+$CfgBin    = To-ConfigPath $ServerBin $RepoRoot
 $CfgModel  = To-ConfigPath $ResolvedModelPath $RepoRoot
-$CfgMmproj = if ($ResolvedMmprojPath) { To-ConfigPath $ResolvedMmprojPath $RepoRoot } else { "" }
+$CfgMmproj = if ($ResolvedMmproj) { To-ConfigPath $ResolvedMmproj $RepoRoot } else { "" }
 
 $ConfigContent = @"
 [runtime]
@@ -286,6 +312,8 @@ model_path = "$CfgModel"
 mmproj_path = "$CfgMmproj"
 
 [llm]
+backend = "$Backend"
+auto_vram_sizing = true
 host = "127.0.0.1"
 port = 8080
 n_gpu_layers = 99
@@ -299,12 +327,8 @@ Set-Content -Path $ConfigPath -Value $ConfigContent -Encoding UTF8
 
 Write-Host ""
 Write-Host "==================================================================" -ForegroundColor Green
-Write-Host "  Setup Summary" -ForegroundColor Green
-Write-Host "  llama-server.exe : $(if (Test-Path $ResolvedServerBin) { 'READY' } else { 'MISSING (see build warnings above)' })"
+Write-Host "  Plug-and-Play Setup Complete" -ForegroundColor Green
+Write-Host "  llama-server.exe : $(if (Test-Path $ServerBin) { 'READY' } else { 'MISSING' })"
 Write-Host "  Bonsai Q2_0 GGUF : $(if (Test-Path $ResolvedModelPath) { 'READY' } else { 'MISSING' })"
-Write-Host "  Vision mmproj    : $(if ($ResolvedMmprojPath -and (Test-Path $ResolvedMmprojPath)) { $ResolvedMmprojPath } else { 'NOT FOUND' })"
+Write-Host "  Vision mmproj    : $(if ($ResolvedMmproj -and (Test-Path $ResolvedMmproj)) { $ResolvedMmproj } else { 'NOT FOUND' })"
 Write-Host "==================================================================" -ForegroundColor Green
-
-if ($MissingBuildTools.Count -gt 0 -and -not (Test-Path $ResolvedServerBin)) {
-    exit 3
-}

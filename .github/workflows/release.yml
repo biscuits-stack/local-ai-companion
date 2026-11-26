@@ -1,0 +1,149 @@
+name: Release Cross-Platform Companion
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Windows (x86_64)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Stage and package Windows zip
+        shell: pwsh
+        run: |
+          $stage = "dist/Local_AI_Companion_Win64"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+
+          Copy-Item "target/release/local_ai_companion.exe" "$stage/"
+          Copy-Item "config.toml" "$stage/"
+          if (Test-Path "run.bat") { Copy-Item "run.bat" "$stage/" }
+          if (Test-Path "setup_bonsai.ps1") { Copy-Item "setup_bonsai.ps1" "$stage/" }
+          if (Test-Path "README.md") { Copy-Item "README.md" "$stage/" }
+          if (Test-Path "Backend") { Copy-Item "Backend" "$stage/Backend" -Recurse }
+          elseif (Test-Path "backend") { Copy-Item "backend" "$stage/Backend" -Recurse }
+          if (Test-Path "assets") { Copy-Item "assets" "$stage/assets" -Recurse }
+
+          Compress-Archive -Path "$stage/*" -DestinationPath "Local_AI_Companion_Win64.zip" -Force
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Local_AI_Companion_Win64
+          path: Local_AI_Companion_Win64.zip
+
+  build-macos-arm64:
+    name: Build macOS Apple Silicon (arm64)
+    runs-on: macos-15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (aarch64-apple-darwin)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary for Apple Silicon
+        run: cargo build --release --target aarch64-apple-darwin
+
+      - name: Assemble Local AI Companion.app bundle
+        run: |
+          APP_DIR="Local AI Companion.app"
+          rm -rf "$APP_DIR"
+          mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
+
+          cp "target/aarch64-apple-darwin/release/local_ai_companion" "$APP_DIR/Contents/MacOS/local_ai_companion"
+          chmod +x "$APP_DIR/Contents/MacOS/local_ai_companion"
+
+          if [ -f "config.toml" ]; then
+            sed 's|runtime/bin/llama-server\.exe|runtime/bin/llama-server|g' config.toml > "$APP_DIR/Contents/Resources/config.toml"
+          fi
+          if [ -d "Backend" ]; then
+            cp -R "Backend" "$APP_DIR/Contents/Resources/Backend"
+          elif [ -d "backend" ]; then
+            cp -R "backend" "$APP_DIR/Contents/Resources/Backend"
+          fi
+          if [ -d "assets" ]; then
+            cp -R "assets" "$APP_DIR/Contents/Resources/assets"
+          fi
+
+          cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key>
+            <string>Local AI Companion</string>
+            <key>CFBundleDisplayName</key>
+            <string>Local AI Companion</string>
+            <key>CFBundleIdentifier</key>
+            <string>com.localai.companion</string>
+            <key>CFBundleExecutable</key>
+            <string>local_ai_companion</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>CFBundleVersion</key>
+            <string>1</string>
+            <key>CFBundleShortVersionString</key>
+            <string>0.1.0</string>
+            <key>NSMicrophoneUsageDescription</key>
+            <string>Local AI Companion uses your microphone for local Whisper speech-to-text.</string>
+            <key>NSScreenCaptureUsageDescription</key>
+            <string>Local AI Companion captures your screen when you ask it to inspect what is visible.</string>
+            <key>NSHighResolutionCapable</key>
+            <true/>
+            <key>LSUIElement</key>
+            <true/>
+          </dict>
+          </plist>
+          PLIST
+
+          codesign --force --deep --sign - "$APP_DIR"
+          ditto -c -k --keepParent "$APP_DIR" Local_AI_Companion_macOS_arm64.zip
+
+      - name: Upload macOS arm64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Local_AI_Companion_macOS_arm64
+          path: Local_AI_Companion_macOS_arm64.zip
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [build-windows, build-macos-arm64]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release_assets
+          merge-multiple: true
+
+      - name: Attach packages to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            release_assets/Local_AI_Companion_Win64.zip
+            release_assets/Local_AI_Companion_macOS_arm64.zip

@@ -1,10 +1,12 @@
-[runtime]
+﻿[runtime]
 root_dir = "runtime"
 llama_server_bin = "runtime/bin/llama-server.exe"
 model_path = "runtime/models/Ternary-Bonsai-2.5-27B-Q2_0.gguf"
-mmproj_path = ""
+mmproj_path = "runtime/models/Ternary-Bonsai-2.5-27B-mmproj-BF16.gguf"
 
 [llm]
+backend = "auto"
+auto_vram_sizing = true
 host = "127.0.0.1"
 port = 8080
 n_gpu_layers = 99

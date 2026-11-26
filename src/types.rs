@@ -104,6 +104,9 @@ pub struct Toast {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LlmStatus {
+    DetectingHardware,
+    DownloadingRuntime(String),
+    DownloadingModel(String),
     Starting,
     LoadingModel,
     Ready,
@@ -113,6 +116,9 @@ pub enum LlmStatus {
 impl LlmStatus {
     pub fn label(&self) -> String {
         match self {
+            LlmStatus::DetectingHardware => "Detecting GPU & backend...".to_string(),
+            LlmStatus::DownloadingRuntime(detail) => format!("Downloading runtime: {detail}"),
+            LlmStatus::DownloadingModel(detail) => format!("Downloading model: {detail}"),
             LlmStatus::Starting => "Bonsai 27B: Starting...".to_string(),
             LlmStatus::LoadingModel => "Bonsai 27B: Loading model into VRAM...".to_string(),
             LlmStatus::Ready => "Bonsai 27B: Ready".to_string(),

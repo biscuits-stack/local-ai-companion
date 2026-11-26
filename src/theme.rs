@@ -155,10 +155,11 @@ pub fn tokens() -> &'static ThemeTokens {
 }
 
 fn resolve_font_bytes(candidates: &[&str]) -> Option<Vec<u8>> {
-    let mut search_dirs = vec![
-        crate::config::app_root_dir().join("assets").join("fonts"),
-        crate::config::app_root_dir().join("fonts"),
-    ];
+    let mut search_dirs = Vec::new();
+    for root in crate::config::app_search_roots() {
+        search_dirs.push(root.join("assets").join("fonts"));
+        search_dirs.push(root.join("fonts"));
+    }
 
     if let Ok(win_dir) = std::env::var("WINDIR").or_else(|_| std::env::var("SYSTEMROOT")) {
         search_dirs.push(std::path::PathBuf::from(win_dir).join("Fonts"));

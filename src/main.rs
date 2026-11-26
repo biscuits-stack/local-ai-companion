@@ -3,6 +3,7 @@ mod backend;
 mod chat;
 mod companion;
 mod config;
+mod hardware;
 mod screen;
 mod theme;
 mod toolbar;
@@ -19,13 +20,15 @@ fn main() -> eframe::Result<()> {
     println!("      Engine: Kokoro TTS + Faster-Whisper STT           ");
     println!("========================================================");
 
+    let viewport = egui::ViewportBuilder::default()
+        .with_title("AI Desktop Companion")
+        .with_transparent(true)
+        .with_decorations(false)
+        .with_always_on_top()
+        .with_maximized(true);
+
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("AI Desktop Companion")
-            .with_transparent(true)
-            .with_decorations(false)
-            .with_always_on_top()
-            .with_maximized(true),
+        viewport,
         ..Default::default()
     };
 

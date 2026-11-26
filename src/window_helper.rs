@@ -1,4 +1,4 @@
-#[cfg(windows)]
+#[cfg(target_os = "windows")]
 use windows_sys::Win32::{
     Foundation::HWND,
     Graphics::Gdi::{
@@ -7,24 +7,37 @@ use windows_sys::Win32::{
     UI::WindowsAndMessaging::{FindWindowW, SetWindowPos, HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE},
 };
 
+#[cfg(target_os = "macos")]
+use objc2_app_kit::{NSApplication, NSEvent, NSWindow};
+#[cfg(target_os = "macos")]
+use objc2_foundation::MainThreadMarker;
+
 pub struct WindowHitTestManager {
-    #[cfg(windows)]
+    #[cfg(target_os = "windows")]
     hwnd: Option<HWND>,
-    #[cfg(windows)]
+    #[cfg(target_os = "windows")]
     last_regions: Vec<[i32; 4]>,
+    #[cfg(target_os = "macos")]
+    last_ignores_mouse: Option<bool>,
+    #[cfg(target_os = "macos")]
+    configured_window: bool,
 }
 
 impl WindowHitTestManager {
     pub fn new() -> Self {
         Self {
-            #[cfg(windows)]
+            #[cfg(target_os = "windows")]
             hwnd: None,
-            #[cfg(windows)]
+            #[cfg(target_os = "windows")]
             last_regions: Vec::new(),
+            #[cfg(target_os = "macos")]
+            last_ignores_mouse: None,
+            #[cfg(target_os = "macos")]
+            configured_window: false,
         }
     }
 
-    #[cfg(windows)]
+    #[cfg(target_os = "windows")]
     pub fn ensure_hwnd(&mut self, window_title: &str) -> Option<HWND> {
         if let Some(h) = self.hwnd {
             return Some(h);
@@ -45,7 +58,7 @@ impl WindowHitTestManager {
         None
     }
 
-    #[cfg(windows)]
+    #[cfg(target_os = "windows")]
     pub fn update_interactive_regions(
         &mut self,
         window_title: &str,
@@ -99,7 +112,60 @@ impl WindowHitTestManager {
         self.last_regions = current_regions;
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    pub fn update_interactive_regions(
+        &mut self,
+        window_title: &str,
+        rects: &[eframe::egui::Rect],
+        _scale_factor: f32,
+    ) {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+
+        let app = NSApplication::sharedApplication(mtm);
+        let windows = app.windows();
+        let count = windows.count();
+        if count == 0 {
+            return;
+        }
+
+        // Locate matching companion NSWindow by title, falling back to first window
+        let mut target: Option<objc2::rc::Retained<NSWindow>> = None;
+        for i in 0..count {
+            let win = windows.objectAtIndex(i);
+            if win.title().to_string() == window_title {
+                target = Some(win);
+                break;
+            }
+        }
+        let window = target.unwrap_or_else(|| windows.objectAtIndex(0));
+
+        if !self.configured_window {
+            window.setHasShadow(false);
+            window.setOpaque(false);
+            self.configured_window = true;
+        }
+
+        let mouse = unsafe { NSEvent::mouseLocation() };
+        let frame = window.frame();
+
+        // Convert macOS screen coordinates (bottom-left origin, logical points)
+        // into egui window-local coordinates (top-left origin, logical points).
+        let local_x = (mouse.x - frame.origin.x) as f32;
+        let local_y = (frame.origin.y + frame.size.height - mouse.y) as f32;
+        let cursor_pos = eframe::egui::Pos2::new(local_x, local_y);
+
+        let over_ui = rects.iter().any(|r| r.expand(2.0).contains(cursor_pos));
+        let should_ignore = !over_ui;
+
+        if self.last_ignores_mouse != Some(should_ignore) {
+            window.setIgnoresMouseEvents(should_ignore);
+            self.last_ignores_mouse = Some(should_ignore);
+        }
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     pub fn update_interactive_regions(
         &mut self,
         _window_title: &str,

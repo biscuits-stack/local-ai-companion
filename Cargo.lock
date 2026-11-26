@@ -1710,8 +1710,12 @@ name = "local_ai_companion"
 version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
+ "core-graphics",
  "eframe",
  "image",
+ "objc2 0.5.3",
+ "objc2-app-kit 0.2.2",
+ "objc2-foundation 0.2.2",
  "serde",
  "serde_json",
  "tungstenite",
