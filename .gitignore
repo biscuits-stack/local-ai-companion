@@ -1,4 +1,4 @@
-
+#remember to add your LLM models into models folder inside runtime
 
 # Rust / Cargo (Cargo.lock kept tracked for reproducible builds)
 target/
