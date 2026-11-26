@@ -1,9 +1,4 @@
-# Agent / AI Tooling
-.agent/
-.agents/
-.gemini/
-.claude/
-.cursor/
+
 
 # Rust / Cargo (Cargo.lock kept tracked for reproducible builds)
 target/
