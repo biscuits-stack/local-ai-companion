@@ -42,6 +42,7 @@ __pycache__/
 .env
 .env.*
 config.local.toml
+.gitignore
 
 # IDEs & Editors
 .vscode/
